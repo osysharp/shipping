@@ -1,0 +1,117 @@
+using Osysharp.Shipping;
+
+DeliveryQuoteRequest Basket(long subtotal, string? country) {
+  return new DeliveryQuoteRequest {
+    Currency = "EUR", Subtotal = subtotal, Items = 1,
+    To = country == null ? null : new DeliveryAddress { Name = "A", Street = "B 1", PostCode = "1", City = "C", Country = country },
+  };
+}
+
+/// What an app does with its providers: every option every ready provider quotes.
+List<DeliveryOption> Options(List<IDeliveryProvider> providers, DeliveryQuoteRequest request) {
+  List<DeliveryOption> all = [];
+  foreach (var p in providers) { if (p.IsReady()) { all.AddRange(p.Quote(request)); } }
+  return all;
+}
+
+[Test]
+void a_flat_rate_is_free_above_its_threshold_and_only_where_it_delivers() {
+  var flat = new FlatRateDelivery { Price = 900, FreeFrom = 20000, Countries = ["SE", "NO"] };
+  Assert.Equal(900, flat.Quote(Basket(5000, "SE"))[0].Price);
+  Assert.Equal(0, flat.Quote(Basket(25000, "se"))[0].Price);
+  Assert.Empty(flat.Quote(Basket(5000, "DE")));
+  Assert.Single(flat.Quote(Basket(5000, null)));   // before an address, it is still on offer
+}
+
+[Test]
+void every_ready_provider_offers_its_options_and_collection_needs_no_address() {
+  List<IDeliveryProvider> providers = [
+    new FlatRateDelivery { Price = 900 },
+    new CollectInStore { Address = "Storgatan 1, weekdays 10–18" },
+  ];
+  var options = Options(providers, Basket(5000, "SE"));
+  Assert.Equal(2, options.Count);
+  Assert.True(options[0].NeedsAddress);
+  Assert.False(options[1].NeedsAddress);
+  Assert.Equal("Storgatan 1, weekdays 10–18", options[1].Description);
+}
+
+[Test]
+void zones_price_by_country_and_weight_and_the_rest_of_the_world_catches_the_others() {
+  var zones = new ZoneRateDelivery { Zones = [
+    new DeliveryZone { Name = "Sweden", Countries = ["SE"], FreeFrom = 100000,
+                       Rates = [ new WeightRate { UpToGrams = 2000, Price = 4900 }, new WeightRate { UpToGrams = 10000, Price = 9900 } ] },
+    new DeliveryZone { Name = "World", Rates = [ new WeightRate { UpToGrams = 5000, Price = 24900 } ] },
+  ] };
+  var light = Basket(5000, "SE"); light.WeightGrams = 1500;
+  Assert.Equal(4900, zones.Quote(light)[0].Price);
+  var heavy = Basket(5000, "SE"); heavy.WeightGrams = 6000;
+  Assert.Equal(9900, zones.Quote(heavy)[0].Price);
+  var dear = Basket(150000, "SE"); dear.WeightGrams = 6000;
+  Assert.Equal(0, zones.Quote(dear)[0].Price);                 // free in Sweden over 1 000
+  var far = Basket(5000, "JP"); far.WeightGrams = 1000;
+  Assert.Equal("World", zones.Quote(far)[0].Description);
+  var tooHeavy = Basket(5000, "JP"); tooHeavy.WeightGrams = 9000;
+  Assert.Empty(zones.Quote(tooHeavy));                         // over the World ladder: not delivered there
+  Assert.Empty(zones.Quote(Basket(5000, null)));               // no address yet: no price to give
+}
+
+[Test]
+void a_zone_can_price_by_what_the_basket_is_worth() {
+  var zones = new ZoneRateDelivery { Zones = [
+    new DeliveryZone { Name = "Sweden", Countries = ["SE"],
+      ValueRates = [ new ValueRate { UpToSubtotal = 50000, Price = 7900 }, new ValueRate { UpToSubtotal = 150000, Price = 4900 } ] },
+  ] };
+  Assert.Equal(7900, zones.Quote(new DeliveryQuoteRequest { Subtotal = 30000, To = new DeliveryAddress { Country = "SE" } })[0].Price);
+  Assert.Equal(4900, zones.Quote(new DeliveryQuoteRequest { Subtotal = 90000, To = new DeliveryAddress { Country = "SE" } })[0].Price);
+  Assert.Equal(4900, zones.Quote(new DeliveryQuoteRequest { Subtotal = 900000, To = new DeliveryAddress { Country = "SE" } })[0].Price);   // the last step
+}
+
+/// A provider with points, as a carrier kit writes one: a locker option the customer chooses a point for.
+public class LockerCarrier : IDeliveryProvider {
+  public string Key { get; set; } = "locker";
+  public string Name { get; set; } = "Lockers";
+  public bool IsReady() { return true; }
+  public List<DeliveryOption> Quote(DeliveryQuoteRequest request) {
+    return [new DeliveryOption { Id = "box", Label = "Parcel locker", Price = 3900, ChoosePoint = true },
+            new DeliveryOption { Id = "door", Label = "To your door", Price = 6900 }];
+  }
+  public List<PickupPoint> PickupPoints(string optionId, DeliveryAddress near) {
+    if (optionId != "box") { return []; }
+    return [new PickupPoint { Id = "L-" + near.PostCode, Name = "Locker at the station", Street = "Station 1", PostCode = near.PostCode,
+                              City = near.City, Country = near.Country, DistanceMetres = 250, OpeningHours = "Always open" }];
+  }
+  public Shipment Ship(ShipmentRequest request) {
+    return new Shipment { TrackingNumber = request.PickupPoint == null ? "HOME" : "POINT-" + request.PickupPoint.Id };
+  }
+  public ReturnShipment? BookReturn(ReturnShipmentRequest request) { return null; }
+  public bool MakesLabels() { return true; }
+  public bool BooksPickups() { return false; }
+  public PickupBooking? BookPickup(PickupRequest request) { return null; }
+  public TrackingStatus Track(string trackingNumber) { return new TrackingStatus(); }
+  public List<DeliveryEvent> HandleEvent(string body, Dictionary<string, string> headers) { return []; }
+}
+
+[Test]
+void an_option_with_points_lists_them_near_an_address_and_the_booking_carries_the_one_chosen() {
+  var near = new DeliveryAddress { PostCode = "11821", City = "Stockholm", Country = "SE" };
+  var lockers = new LockerCarrier();
+  var options = lockers.Quote(Basket(5000, "SE"));
+  Assert.True(options[0].ChoosePoint);
+  Assert.False(options[1].ChoosePoint);
+  var points = lockers.PickupPoints("box", near);
+  Assert.Equal("L-11821", points.Single().Id);
+  Assert.Equal(250, points[0].DistanceMetres);
+  Assert.Empty(lockers.PickupPoints("door", near));
+  Assert.Equal("POINT-L-11821", lockers.Ship(new ShipmentRequest { Reference = "A-1", OptionId = "box", PickupPoint = points[0] }).TrackingNumber);
+  Assert.Equal("HOME", lockers.Ship(new ShipmentRequest { Reference = "A-2", OptionId = "door" }).TrackingNumber);
+}
+
+[Test]
+void the_built_in_ways_to_deliver_have_no_points_to_choose() {
+  var near = new DeliveryAddress { PostCode = "11821", City = "Stockholm", Country = "SE" };
+  Assert.Empty(new FlatRateDelivery { Price = 900 }.PickupPoints("flat", near));
+  Assert.Empty(new CollectInStore().PickupPoints("collect", near));
+  Assert.Empty(new ZoneRateDelivery().PickupPoints("zones", near));
+  Assert.False(new FlatRateDelivery { Price = 900 }.Quote(Basket(5000, "SE"))[0].ChoosePoint);
+}

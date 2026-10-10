@@ -1,0 +1,213 @@
+namespace Osysharp.Shipping;
+
+/// Where a parcel goes. `Country` is ISO 3166 alpha-2 — "SE", "US".
+public class DeliveryAddress {
+  public string Name = "";
+  public string Street = "";
+  public string PostCode = "";
+  public string City = "";
+  public string Country = "";
+  public string? Phone;
+  public string? Email;
+}
+
+/// What is being sent, as a carrier prices it.
+public class DeliveryQuoteRequest {
+  /// Null before the customer has said where — a quote then lists what does not depend on it (collection, a flat rate).
+  public DeliveryAddress? To;
+  /// ISO 4217.
+  public string Currency = "";
+  /// Minor units, the goods' value — a threshold for free delivery reads it.
+  public long Subtotal = 0;
+  public int WeightGrams = 0;
+  public int Items = 0;
+}
+
+/// One way the customer can receive the goods, priced.
+public class DeliveryOption {
+  /// The provider's own id for the option — "standard", "express", a pickup point's id.
+  public string Id = "";
+  /// What the customer chooses — "Home delivery", "Collect from the workshop", "PostNord service point, Ica Maxi".
+  public string Label = "";
+  public string Description = "";
+  /// Minor units.
+  public long Price = 0;
+  /// True when the goods go to the customer's address, so the address is needed.
+  public bool NeedsAddress = true;
+  /// Days until it arrives, when the provider can say.
+  public int? DaysMin;
+  public int? DaysMax;
+  /// True when the customer chooses WHERE to collect it — a service point, a parcel locker — from the points the
+  /// provider answers for an address (`IDeliveryProvider.PickupPoints`). The chosen point goes with the booking.
+  public bool ChoosePoint = false;
+}
+
+/// A place a customer collects a parcel from — a service point in a shop, a parcel locker — as a carrier lists it.
+public class PickupPoint {
+  /// The carrier's own id for it — what the booking names.
+  public string Id = "";
+  /// What the customer reads — "ICA Supermarket Hornstull".
+  public string Name = "";
+  public string Street = "";
+  public string PostCode = "";
+  public string City = "";
+  /// ISO 3166 alpha-2.
+  public string Country = "";
+  /// How far it is from the address asked about, when the carrier says.
+  public int? DistanceMetres;
+  /// When it is open, as the customer reads it — "Mon–Fri 08:00–21:00, Sat–Sun 09:00–18:00". Empty when not known.
+  public string OpeningHours = "";
+}
+
+/// A booking of a shipment once the goods are packed.
+public class ShipmentRequest {
+  /// The app's own reference — an order number.
+  public string Reference = "";
+  public string OptionId = "";
+  public DeliveryAddress To = new DeliveryAddress();
+  /// Where the parcel leaves from, when that is not the provider's own sender — a shop's second location, a warehouse.
+  /// Null: the provider's `Sender`, as it was set up.
+  public DeliveryAddress? SendFrom;
+  public int WeightGrams = 0;
+  public int Items = 0;
+  /// What is in the parcel, for customs — filled when it leaves the EU's customs territory, empty inside it. A carrier
+  /// that declares customs (CN22 / CN23) sends these with the booking.
+  public List<CustomsLine> Customs = [];
+  /// The sender's EORI number — what customs knows the exporter by. Set whenever `Customs` is.
+  public string ExporterId = "";
+  /// What the customer paid for the delivery, in the customs lines' currency — a customs declaration states it.
+  public decimal Postage = 0;
+  /// The age the recipient must prove with ID at handover — 0 for none. A carrier with an ID-check service books it
+  /// with the parcel; the shop's own packing screen says it either way.
+  public int MinimumAge = 0;
+  /// Where the customer chose to collect it, for an option that lets them (`DeliveryOption.ChoosePoint`). Null: the
+  /// parcel goes to `To`, or — for a collect option nobody chose a point for — wherever the carrier picks.
+  public PickupPoint? PickupPoint;
+}
+
+/// One kind of goods in a parcel, as a customs declaration lists it.
+public class CustomsLine {
+  /// Plain words — "Leather shoes", not a product code.
+  public string Description = "";
+  public int Quantity = 1;
+  public int WeightGrams = 0;
+  /// What these cost the customer, in `Currency`.
+  public decimal Value = 0;
+  /// ISO 4217.
+  public string Currency = "";
+  /// The Harmonized System tariff number — at least six digits ("640399").
+  public string HsCode = "";
+  /// Where the goods were made — ISO 3166 alpha-2.
+  public string OriginCountry = "";
+}
+
+/// Asking a carrier to come and fetch the day's parcels.
+public class PickupRequest {
+  /// The app's own reference for the pickup.
+  public string Reference = "";
+  public DateOnly Date;
+  /// Where to fetch them, and whom to ask for.
+  public DeliveryAddress From = new DeliveryAddress();
+  /// Where to fetch them when that is not the provider's own sender — a shop's second location. Null: its `Sender`.
+  public DeliveryAddress? SendFrom;
+  public int Parcels = 1;
+  public int WeightGrams = 0;
+  /// The tracking numbers of parcels already booked, for a carrier that ties the pickup to them.
+  public List<string> TrackingNumbers = [];
+}
+
+/// A pickup the carrier has booked.
+public class PickupBooking {
+  /// The carrier's reference for it.
+  public string Reference = "";
+  /// Where to see or change it, when the carrier has one.
+  public string Url = "";
+}
+
+public class Shipment {
+  /// The carrier's tracking number, when there is one. Empty for a collection or a flat rate staff post by hand.
+  public string TrackingNumber = "";
+  /// Where the customer follows it.
+  public string TrackingUrl = "";
+  /// A printable label (PDF), when the carrier made one.
+  public byte[]? Label;
+}
+
+/// A customer sending goods back, through the carrier that brought them.
+public class ReturnShipmentRequest {
+  /// The app's own reference for the return — printed on it and tracked.
+  public string Reference = "";
+  /// The outbound parcel's tracking number — a carrier that books returns from the original shipment needs only this.
+  public string OriginalTrackingNumber = "";
+  /// The option the goods went out with (`DeliveryOption.Id`).
+  public string OriginalOptionId = "";
+  /// The customer, who sends it.
+  public DeliveryAddress From = new DeliveryAddress();
+  public int WeightGrams = 0;
+  public int Items = 0;
+}
+
+/// A booked return: what the customer hands in, and how both sides follow it.
+public class ReturnShipment {
+  public string TrackingNumber = "";
+  public string TrackingUrl = "";
+  /// What the customer shows at the counter instead of a printed label — PostNord's return id. Empty when there is none.
+  public string DropOffCode = "";
+  /// That code as a QR image (PNG), for a phone screen.
+  public byte[]? QrCode;
+  /// A label to print and stick on the parcel (PDF), when the carrier made one.
+  public byte[]? Label;
+}
+
+public enum DeliveryState {
+  [Label("Booked")] Booked,
+  [Label("On its way")] InTransit,
+  [Label("Ready to collect")] ReadyForPickup,
+  [Label("Delivered")] Delivered,
+  [Label("Problem")] Exception,
+  [Label("Returned")] Returned,
+}
+
+public class TrackingStatus {
+  public DeliveryState State = DeliveryState.Booked;
+  public string Description = "";
+}
+
+/// A carrier's webhook, read into one shape.
+public class DeliveryEvent {
+  public string TrackingNumber = "";
+  public string Reference = "";
+  public DeliveryState State = DeliveryState.Booked;
+  public string Description = "";
+}
+
+/// A way to deliver. Implement it for a carrier, list an instance of it in your app, and the app offers it.
+public interface IDeliveryProvider {
+  /// Stable, short, lowercase letters and digits — "flat", "collect", "postnord". Stored with each shipment.
+  string Key { get; }
+  /// What staff call it — "PostNord", "Flat rate" — on the desk's lists and pickups.
+  string Name { get; }
+  /// Whether it can be offered right now — its credentials are set.
+  bool IsReady();
+  /// The options for this basket and address. May be empty: nothing this provider offers fits.
+  List<DeliveryOption> Quote(DeliveryQuoteRequest request);
+  /// The points near `near` where an option lets the customer collect (`DeliveryOption.ChoosePoint`), nearest first.
+  /// Empty for an option that has none — and for a provider that has no points at all.
+  List<PickupPoint> PickupPoints(string optionId, DeliveryAddress near);
+  /// Book the shipment for a chosen option — when the goods go out.
+  Shipment Ship(ShipmentRequest request);
+  /// Book a return of a parcel this provider delivered. Null when it does not take returns — the customer then posts
+  /// the goods back their own way.
+  ReturnShipment? BookReturn(ReturnShipmentRequest request);
+  /// Whether `Ship` books the parcel with a carrier and answers its label — the desk sends such parcels in a batch
+  /// and prints the day's labels together. False for one staff post by hand.
+  bool MakesLabels();
+  /// Whether it can be asked to come for parcels — the desk offers a pickup only with a provider that says yes.
+  bool BooksPickups();
+  /// Ask the carrier to fetch parcels from the shop. Null when it does not come for them — staff drop them off.
+  PickupBooking? BookPickup(PickupRequest request);
+  /// Where a parcel is now.
+  TrackingStatus Track(string trackingNumber);
+  /// Read a carrier's webhook. Verifies it and answers what it means; throws for a request the carrier did not send.
+  List<DeliveryEvent> HandleEvent(string body, Dictionary<string, string> headers);
+}

@@ -1,0 +1,187 @@
+namespace Osysharp.Shipping;
+
+/// Delivery at a fixed price, free above a threshold, to the countries listed — posted by staff, who enter the
+/// tracking number themselves. Where most small shops start.
+public class FlatRateDelivery : IDeliveryProvider {
+  public string Key { get; set; } = "flat";
+  public string Name { get; set; } = "Flat rate";
+  public string Label = "Home delivery";
+  public string Description = "";
+  /// Minor units.
+  public long Price = 0;
+  /// Minor units; free from this subtotal up. Zero: never free.
+  public long FreeFrom = 0;
+  /// ISO 3166 alpha-2 codes it delivers to. Empty: anywhere.
+  public List<string> Countries = [];
+  public int? DaysMin;
+  public int? DaysMax;
+  /// Where the customer follows a parcel, with `{tracking}` for its number — the carrier staff post with.
+  public string TrackingUrl = "";
+
+  public bool IsReady() { return true; }
+
+  public List<DeliveryOption> Quote(DeliveryQuoteRequest request) {
+    if (request.To != null && Countries.Count > 0 && !Countries.Contains(request.To.Country.ToUpper())) { return []; }
+    var free = FreeFrom > 0 && request.Subtotal >= FreeFrom;
+    return [new DeliveryOption {
+      Id = Key, Label = Label, Description = Description, Price = free ? 0 : Price,
+      NeedsAddress = true, DaysMin = DaysMin, DaysMax = DaysMax,
+    }];
+  }
+
+  /// No points to choose from: the goods go to the address, or are collected at the shop.
+  public List<PickupPoint> PickupPoints(string optionId, DeliveryAddress near) { return []; }
+
+  public Shipment Ship(ShipmentRequest request) { return new Shipment(); }
+
+  /// Staff arrange a return by hand — nothing to book.
+  public ReturnShipment? BookReturn(ReturnShipmentRequest request) { return null; }
+
+  /// Staff post it by hand: no label is made.
+  public bool MakesLabels() { return false; }
+
+  public bool BooksPickups() { return false; }
+
+  public PickupBooking? BookPickup(PickupRequest request) { return null; }
+
+  public TrackingStatus Track(string trackingNumber) {
+    return new TrackingStatus { State = DeliveryState.InTransit, Description = TrackingUrl == "" ? "" : TrackingUrl.Replace("{tracking}", trackingNumber) };
+  }
+
+  public List<DeliveryEvent> HandleEvent(string body, Dictionary<string, string> headers) {
+    throw new ExternalServiceException("Flat-rate delivery has no carrier to send events.");
+  }
+}
+
+/// The customer collects from the shop. No address, no carrier.
+public class CollectInStore : IDeliveryProvider {
+  public string Key { get; set; } = "collect";
+  public string Name { get; set; } = "Collection";
+  public string Label = "Collect from the shop";
+  /// Where and when — shown with the option and in the confirmation.
+  public string Address = "";
+  public long Price = 0;
+
+  public bool IsReady() { return true; }
+
+  public List<DeliveryOption> Quote(DeliveryQuoteRequest request) {
+    return [new DeliveryOption { Id = Key, Label = Label, Description = Address, Price = Price, NeedsAddress = false }];
+  }
+
+  /// No points to choose from: the goods go to the address, or are collected at the shop.
+  public List<PickupPoint> PickupPoints(string optionId, DeliveryAddress near) { return []; }
+
+  public Shipment Ship(ShipmentRequest request) { return new Shipment(); }
+
+  /// Staff arrange a return by hand — nothing to book.
+  public ReturnShipment? BookReturn(ReturnShipmentRequest request) { return null; }
+
+  /// Staff post it by hand: no label is made.
+  public bool MakesLabels() { return false; }
+
+  public bool BooksPickups() { return false; }
+
+  public PickupBooking? BookPickup(PickupRequest request) { return null; }
+
+  public TrackingStatus Track(string trackingNumber) {
+    return new TrackingStatus { State = DeliveryState.ReadyForPickup, Description = Address };
+  }
+
+  public List<DeliveryEvent> HandleEvent(string body, Dictionary<string, string> headers) {
+    throw new ExternalServiceException("Collection has no carrier to send events.");
+  }
+}
+
+/// One step of a weight ladder: parcels up to `UpToGrams` cost `Price` (minor units).
+public class WeightRate {
+  public int UpToGrams = 0;
+  public long Price = 0;
+}
+
+/// One step of a value ladder: baskets worth up to `UpToSubtotal` (minor units) pay `Price` to be delivered.
+public class ValueRate {
+  public long UpToSubtotal = 0;
+  public long Price = 0;
+}
+
+/// Where a set of rates applies — "Sweden", "Nordics", "EU", "World".
+public class DeliveryZone {
+  public string Name = "";
+  /// ISO 3166 alpha-2 codes. Empty: every country no earlier zone took.
+  public List<string> Countries = [];
+  /// Heaviest-last. A parcel heavier than the last step is not delivered to this zone.
+  public List<WeightRate> Rates = [];
+  /// Priced by what the basket is worth instead — cheapest-basket first; a basket worth more than the last step pays
+  /// the last step. Used when `Rates` is empty.
+  public List<ValueRate> ValueRates = [];
+  /// Minor units; free from this subtotal up, in this zone. Zero: never free.
+  public long FreeFrom = 0;
+  public int? DaysMin;
+  public int? DaysMax;
+}
+
+/// Delivery priced by where it goes and what it weighs — zones of countries, a weight ladder in each. The first zone
+/// that lists the country wins; a zone with no countries is the rest of the world. Posted by staff, who enter the
+/// tracking number themselves, like `FlatRateDelivery`.
+public class ZoneRateDelivery : IDeliveryProvider {
+  public string Key { get; set; } = "zones";
+  public string Name { get; set; } = "Zone rates";
+  public string Label = "Delivery";
+  public List<DeliveryZone> Zones = [];
+  /// Where the customer follows a parcel, with `{tracking}` for its number.
+  public string TrackingUrl = "";
+
+  public bool IsReady() { return Zones.Count > 0; }
+
+  /// The zone a country falls in, or null when none takes it.
+  public DeliveryZone? ZoneFor(string country) {
+    var code = country.ToUpper();
+    foreach (var z in Zones) { if (z.Countries.Contains(code)) { return z; } }
+    return Zones.FirstOrDefault(z => z.Countries.Count == 0);
+  }
+
+  public List<DeliveryOption> Quote(DeliveryQuoteRequest request) {
+    // Before an address the price is not known yet: no option rather than a guess.
+    if (request.To == null) { return []; }
+    var zone = ZoneFor(request.To.Country);
+    if (zone == null) { return []; }
+    long price = 0;
+    if (zone.Rates.Count > 0) {
+      var step = zone.Rates.FirstOrDefault(r => request.WeightGrams <= r.UpToGrams);
+      if (step == null) { return []; }
+      price = step.Price;
+    } else {
+      if (zone.ValueRates.Count == 0) { return []; }
+      var byValue = zone.ValueRates.FirstOrDefault(r => request.Subtotal <= r.UpToSubtotal) ?? zone.ValueRates.Last();
+      price = byValue.Price;
+    }
+    var free = zone.FreeFrom > 0 && request.Subtotal >= zone.FreeFrom;
+    return [new DeliveryOption {
+      Id = Key, Label = Label, Description = zone.Name, Price = free ? 0 : price,
+      NeedsAddress = true, DaysMin = zone.DaysMin, DaysMax = zone.DaysMax,
+    }];
+  }
+
+  /// No points to choose from: the goods go to the address, or are collected at the shop.
+  public List<PickupPoint> PickupPoints(string optionId, DeliveryAddress near) { return []; }
+
+  public Shipment Ship(ShipmentRequest request) { return new Shipment(); }
+
+  /// Staff arrange a return by hand — nothing to book.
+  public ReturnShipment? BookReturn(ReturnShipmentRequest request) { return null; }
+
+  /// Staff post it by hand: no label is made.
+  public bool MakesLabels() { return false; }
+
+  public bool BooksPickups() { return false; }
+
+  public PickupBooking? BookPickup(PickupRequest request) { return null; }
+
+  public TrackingStatus Track(string trackingNumber) {
+    return new TrackingStatus { State = DeliveryState.InTransit, Description = TrackingUrl == "" ? "" : TrackingUrl.Replace("{tracking}", trackingNumber) };
+  }
+
+  public List<DeliveryEvent> HandleEvent(string body, Dictionary<string, string> headers) {
+    throw new ExternalServiceException("Zone-rate delivery has no carrier to send events.");
+  }
+}
