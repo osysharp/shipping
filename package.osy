@@ -5,8 +5,8 @@
 // implementing `IDeliveryProvider`: it quotes the options for a basket and an address, books a shipment when the
 // goods go out, and says where the parcel is.
 package Osysharp.Shipping {
-  version "0.1.1";
-  minPlatform "0.9.0";
+  version "0.2.0";
+  minPlatform "0.14.0";
   summary     "the delivery contract — quote, ship, track and carrier events — plus flat-rate delivery and collection.";
   model "model/*.osy";
   tests "tests";
